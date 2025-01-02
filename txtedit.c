@@ -20,7 +20,11 @@ enum editorKey {
     ARROW_LEFT = 1000,
     ARROW_RIGHT,
     ARROW_UP,
-    ARROW_DOWN
+    ARROW_DOWN,
+    HOME_KEY,
+    END_KEY,
+    PAGE_UP,
+    PAGE_DOWN
 };
 
 struct editor_config {
@@ -103,15 +107,50 @@ int read_keypress()
             return '\x1b';
         }
         if (seq[0] == '[') {
+            if (seq[1] >= '0' && seq[1] <= '9') {
+                if (read(STDIN_FILENO, &seq[2], 1) != 1) {
+                    return '\x1b';
+                }
+                if (seq[2] == '~') {
+                    switch (seq[1]) {
+                        case '1':
+                            return HOME_KEY;
+                        case '4':
+                            return END_KEY;
+                        case '5':
+                            return PAGE_UP;
+                        case '6':
+                            return PAGE_DOWN;
+                        case '7':
+                            return HOME_KEY;
+                        case '8':
+                            return END_KEY;
+                    }
+                }
+            }
+            else {
+                switch (seq[1]) {
+                    case 'A':
+                        return ARROW_UP;
+                    case 'B':
+                        return ARROW_DOWN;
+                    case 'C':
+                        return ARROW_RIGHT;
+                    case 'D':
+                        return ARROW_LEFT;
+                    case 'H':
+                        return HOME_KEY;
+                    case 'F':
+                        return END_KEY;
+                }
+            }
+        }
+        else if (seq[0] == 'O') {
             switch (seq[1]) {
-                case 'A':
-                    return ARROW_UP;
-                case 'B':
-                    return ARROW_DOWN;
-                case 'C':
-                    return ARROW_RIGHT;
-                case 'D':
-                    return ARROW_LEFT;
+                case 'H':
+                    return HOME_KEY;
+                case 'F':
+                    return END_KEY;
             }
         }
 
@@ -196,16 +235,17 @@ void ab_free(struct append_buf *ab) {
 void draw_rows(struct append_buf *ab)
 {
     for (int i = 0; i < ecfg.screen_rows; i++) {
+        /* display welcome message in the middle of the screen */
         if (i == ecfg.screen_rows / 3) {
             char welcome[80];
             int welcome_len = snprintf(welcome, sizeof(welcome),
-                    "Welcome to txtedit! Press Ctrl+q to quit."); /* welcome message */
+                    "Welcome to txtedit! Press Ctrl+q to quit.");
             if (welcome_len > ecfg.screen_cols) {
                 welcome_len = ecfg.screen_cols;
             }
             int padding = (ecfg.screen_cols - welcome_len) / 2;
             if (padding) {
-                ab_append(ab, "~", 1);
+                ab_append(ab, "~", 1); /* tilde */
                 padding--;
             }
             while (padding--) {
@@ -244,7 +284,7 @@ void refresh_screen()
     ab_free(&ab);
 }
 
-/* move the cursor using the "wasd" keys */
+/* move the cursor using the arrow keys */
 void move_cursor(int key) {
     switch (key) {
         case ARROW_UP:
@@ -281,6 +321,23 @@ void process_keypress()
             write(STDOUT_FILENO, "\x1b[2J", 4);
             write(STDOUT_FILENO, "\x1b[H", 3);
             exit(0);
+            break;
+        
+        case HOME_KEY:
+            ecfg.cursor_x = 0;
+            break;
+        case END_KEY:
+            ecfg.cursor_x = ecfg.screen_cols - 1;
+            break;
+
+        case PAGE_UP:
+        case PAGE_DOWN:
+            {
+                int times = ecfg.screen_rows;
+                while (times--) {
+                    move_cursor(c == PAGE_UP ? ARROW_UP : ARROW_DOWN);
+                }
+            }
             break;
         
         case ARROW_UP:
