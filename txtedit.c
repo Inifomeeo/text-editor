@@ -16,7 +16,16 @@
 #define CTRL_KEY(k) ((k) & 0x1f)
 #define APPEND_BUF_INIT {NULL, 0}
 
+enum editorKey {
+    ARROW_LEFT = 1000,
+    ARROW_RIGHT,
+    ARROW_UP,
+    ARROW_DOWN
+};
+
 struct editor_config {
+    int cursor_x;
+    int cursor_y;
     int screen_rows;
     int screen_cols;
     struct termios og_termios; /* original terminal settings */
@@ -73,7 +82,7 @@ void enable_raw_mode()
 }
 
 /* read keypresses from user */
-char read_keypress()
+int read_keypress()
 {
     int nread;
     char c;
@@ -84,7 +93,33 @@ char read_keypress()
         }
     };
 
-    return c;
+    if (c == '\x1b') {
+        char seq[3];
+
+        if (read(STDIN_FILENO, &seq[0], 1) != 1) {
+            return '\x1b';
+        }
+        if (read(STDIN_FILENO, &seq[1], 1) != 1) {
+            return '\x1b';
+        }
+        if (seq[0] == '[') {
+            switch (seq[1]) {
+                case 'A':
+                    return ARROW_UP;
+                case 'B':
+                    return ARROW_DOWN;
+                case 'C':
+                    return ARROW_RIGHT;
+                case 'D':
+                    return ARROW_LEFT;
+            }
+        }
+
+        return '\x1b';
+    }
+    else {
+        return c;
+    }
 }
 
 /* get cursor position */
@@ -199,17 +234,46 @@ void refresh_screen()
 
     draw_rows(&ab);
 
-    ab_append(&ab, "\x1b[H", 3);
+    char buf[32];
+    snprintf(buf, sizeof(buf), "\x1b[%d;%dH", ecfg.cursor_y + 1, ecfg.cursor_x + 1);
+    ab_append(&ab, buf, strlen(buf));
+
     ab_append(&ab, "\x1b[?25h", 6);
 
     write(STDOUT_FILENO, ab.buf, ab.len);
     ab_free(&ab);
 }
 
+/* move the cursor using the "wasd" keys */
+void move_cursor(int key) {
+    switch (key) {
+        case ARROW_UP:
+            if (ecfg.cursor_y != 0) {
+                ecfg.cursor_y--;
+            }
+            break;
+        case ARROW_DOWN:
+            if (ecfg.cursor_y != ecfg.screen_rows - 1) {
+                ecfg.cursor_y++;
+            }
+            break;
+        case ARROW_LEFT:
+            if (ecfg.cursor_x != 0) {
+                ecfg.cursor_x--;
+            }
+            break;
+        case ARROW_RIGHT:
+            if (ecfg.cursor_x != ecfg.screen_cols - 1) {
+                ecfg.cursor_x++;
+            }
+            break;
+    }
+}
+
 /* process user keypresses */
 void process_keypress()
 {
-    char c = read_keypress();
+    int c = read_keypress();
 
     switch (c) {
         /* quit when Ctrl+q is pressed */
@@ -218,12 +282,21 @@ void process_keypress()
             write(STDOUT_FILENO, "\x1b[H", 3);
             exit(0);
             break;
+        
+        case ARROW_UP:
+        case ARROW_DOWN:
+        case ARROW_LEFT:
+        case ARROW_RIGHT:
+            move_cursor(c);
+            break;
     }
 }
 
 /* initialize editor */
 void init_editor()
 {
+    ecfg.cursor_x = 0;
+    ecfg.cursor_y = 0;
     if (get_window_size(&ecfg.screen_rows, &ecfg.screen_cols) == -1) {
         display_error("get_window_size");
     }
