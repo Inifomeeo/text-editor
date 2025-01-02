@@ -161,7 +161,26 @@ void ab_free(struct append_buf *ab) {
 void draw_rows(struct append_buf *ab)
 {
     for (int i = 0; i < ecfg.screen_rows; i++) {
-        ab_append(ab, "~", 1);
+        if (i == ecfg.screen_rows / 3) {
+            char welcome[80];
+            int welcome_len = snprintf(welcome, sizeof(welcome),
+                    "Welcome to txtedit! Press Ctrl+q to quit."); /* welcome message */
+            if (welcome_len > ecfg.screen_cols) {
+                welcome_len = ecfg.screen_cols;
+            }
+            int padding = (ecfg.screen_cols - welcome_len) / 2;
+            if (padding) {
+                ab_append(ab, "~", 1);
+                padding--;
+            }
+            while (padding--) {
+                ab_append(ab, " ", 1);
+            }
+            ab_append(ab, welcome, welcome_len);
+        }
+        else {
+            ab_append(ab, "~", 1); /* tilde */
+        }
 
         ab_append(ab, "\x1b[K", 3);
         if (i < ecfg.screen_rows - 1) {
@@ -170,7 +189,7 @@ void draw_rows(struct append_buf *ab)
     }
 }
 
-/* clear the screen */
+/* refresh the screen */
 void refresh_screen()
 {
     struct append_buf ab = APPEND_BUF_INIT;
