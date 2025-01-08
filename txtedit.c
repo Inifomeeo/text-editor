@@ -22,6 +22,7 @@
 #define _GNU_SOURCE
 
 enum EditorKeys {
+    BACKSPACE = 127,
     ARROW_LEFT = 1000,
     ARROW_RIGHT,
     ARROW_UP,
@@ -292,6 +293,28 @@ void editor_append_row(char *s, size_t len)
     E.num_rows++;
 }
 
+/* insert a character into a row at a given index */
+void row_insert_char(ERow *row, int at, int c)
+{
+    if (at < 0 || at > row->size) {
+        at = row->size;
+    }
+    row->chars = realloc(row->chars, row->size + 2);
+    memmove(&row->chars[at + 1], &row->chars[at], row->size - at + 1);
+    row->size++;
+    row->chars[at] = c;
+    editor_update_row(row);
+}
+
+/* insert a character into the position of the cursor */
+void insert_char(int c) {
+    if (E.cursor_y == E.num_rows) {
+        editor_append_row("", 0);
+    }
+    row_insert_char(&E.rows[E.cursor_y], E.cursor_x, c);
+    E.cursor_x++;
+}
+
 /* open and read a file from disk */
 void editor_open(char *filename)
 {
@@ -521,6 +544,9 @@ void process_keypress()
     int c = read_keypress();
 
     switch (c) {
+        case '\r':
+            break;
+        
         /* quit when Ctrl+q is pressed */
         case CTRL_KEY('q'):
             write(STDOUT_FILENO, "\x1b[2J", 4);
@@ -535,6 +561,11 @@ void process_keypress()
             if (E.cursor_y < E.num_rows) {
                 E.cursor_x = E.rows[E.cursor_y].size;
             }
+            break;
+        
+        case BACKSPACE:
+        case CTRL_KEY('h'):
+        case DEL_KEY:
             break;
 
         case PAGE_UP:
@@ -561,6 +592,14 @@ void process_keypress()
         case ARROW_LEFT:
         case ARROW_RIGHT:
             move_cursor(c);
+            break;
+        
+        case CTRL_KEY('l'):
+        case '\x1b':
+            break;
+
+        default:
+            insert_char(c);
             break;
     }
 }
