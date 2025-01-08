@@ -4,6 +4,7 @@
 
 #include <ctype.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdarg.h>
@@ -63,6 +64,8 @@ struct AppendBuf {
   char *buf;
   int len;
 };
+
+void set_status_message(const char *fmt, ...);
 
 /* display error message */
 void display_error(const char *s)
@@ -315,6 +318,28 @@ void insert_char(int c) {
     E.cursor_x++;
 }
 
+/* convert rows to a single string */
+char *rows_to_string(int *buflen)
+{
+    int totlen = 0;
+    int j;
+    for (j = 0; j < E.num_rows; j++) {
+        totlen += E.rows[j].rsize + 1;
+    }
+    *buflen = totlen;
+
+    char *buf = malloc(totlen);
+    char *p = buf;
+    for (j = 0; j < E.num_rows; j++) {
+        memcpy(p, E.rows[j].chars, E.rows[j].size);
+        p += E.rows[j].size;
+        *p = '\n';
+        p++;
+    }
+
+    return buf;
+}
+
 /* open and read a file from disk */
 void editor_open(char *filename)
 {
@@ -338,6 +363,30 @@ void editor_open(char *filename)
 
     free(line);
     fclose(fp);
+}
+
+/* save a file to disk */
+void editor_save() {
+    if (E.filename == NULL) return;
+
+    int len;
+    char *buf = rows_to_string(&len);
+
+    int fd = open(E.filename, O_RDWR | O_CREAT, 0644);
+    if (fd != -1) {
+        if (ftruncate(fd, len) != -1) {
+            if (write(fd, buf, len) == len) {
+                close(fd);
+                free(buf);
+                set_status_message("%d bytes written to disk", len);
+                return;
+            }
+        }
+        close(fd);
+    }
+
+    free(buf);
+    set_status_message("Can't save file! I/O error: %s", strerror(errno));
 }
 
 /* fill values in append buffer */
@@ -553,6 +602,10 @@ void process_keypress()
             write(STDOUT_FILENO, "\x1b[H", 3);
             exit(0);
             break;
+
+        case CTRL_KEY('s'):
+            editor_save();
+            break;
         
         case HOME_KEY:
             E.cursor_x = 0;
@@ -632,7 +685,7 @@ int main(int argc, char **argv)
         editor_open(argv[1]);
     }
 
-    set_status_message("HELP: ^Q = quit");
+    set_status_message("HELP: ^S = save | ^Q = quit");
 
     while(1) {
         refresh_screen();
