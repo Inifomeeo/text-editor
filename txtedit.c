@@ -16,6 +16,7 @@
 #include <unistd.h>
 
 #define TAB_STOP 8
+#define QUIT_TIMES 3
 #define CTRL_KEY(k) ((k) & 0x1f)
 #define APPEND_BUF_INIT {NULL, 0}
 
@@ -52,6 +53,7 @@ struct EditorConfig {
     int screen_cols;
     int num_rows;
     ERow *rows;
+    int dirty;
     char *filename;
     char status_msg[80];
     time_t status_msg_time;
@@ -294,6 +296,7 @@ void editor_append_row(char *s, size_t len)
     editor_update_row(&E.rows[at]);
 
     E.num_rows++;
+    E.dirty++;
 }
 
 /* insert a character into a row at a given index */
@@ -307,6 +310,7 @@ void row_insert_char(ERow *row, int at, int c)
     row->size++;
     row->chars[at] = c;
     editor_update_row(row);
+    E.dirty++;
 }
 
 /* insert a character into the position of the cursor */
@@ -363,6 +367,7 @@ void editor_open(char *filename)
 
     free(line);
     fclose(fp);
+    E.dirty = 0;
 }
 
 /* save a file to disk */
@@ -378,6 +383,7 @@ void editor_save() {
             if (write(fd, buf, len) == len) {
                 close(fd);
                 free(buf);
+                E.dirty = 0;
                 set_status_message("%d bytes written to disk", len);
                 return;
             }
@@ -476,8 +482,9 @@ void draw_status_bar(struct AppendBuf *ab)
 {
     ab_append(ab, "\x1b[7m", 4);
     char status[80], rstatus[80];
-    int len = snprintf(status, sizeof(status), "%.20s - %d lines",
-        E.filename ? E.filename : "[No Name]", E.num_rows);
+    int len = snprintf(status, sizeof(status), "%.20s - %d lines %s",
+        E.filename ? E.filename : "[No Name]", E.num_rows,
+        E.dirty ? "(modified)" : "");
     int rlen = snprintf(rstatus, sizeof(rstatus), "%d/%d", E.cursor_y + 1, E.num_rows);
     if (len > E.screen_cols) {
         len = E.screen_cols;
@@ -590,6 +597,8 @@ void move_cursor(int key)
 /* process user keypresses */
 void process_keypress()
 {
+    static int quit_times = QUIT_TIMES;
+
     int c = read_keypress();
 
     switch (c) {
@@ -598,6 +607,11 @@ void process_keypress()
         
         /* quit when Ctrl+q is pressed */
         case CTRL_KEY('q'):
+            if (E.dirty && quit_times > 0) {
+                set_status_message("WARNING: File has unsaved changes. Use ^S to save or Press ^Q %d more times to quit.", quit_times);
+                quit_times--;
+                return;
+            }
             write(STDOUT_FILENO, "\x1b[2J", 4);
             write(STDOUT_FILENO, "\x1b[H", 3);
             exit(0);
@@ -655,6 +669,8 @@ void process_keypress()
             insert_char(c);
             break;
     }
+
+    quit_times = QUIT_TIMES;
 }
 
 /* initialize editor */
@@ -667,6 +683,7 @@ void editor_init()
     E.col_offset = 0;
     E.num_rows = 0;
     E.rows = NULL;
+    E.dirty = 0;
     E.filename = NULL;
     E.status_msg[0] = '\0';
     E.status_msg_time = 0;
