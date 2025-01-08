@@ -68,6 +68,8 @@ struct AppendBuf {
 };
 
 void set_status_message(const char *fmt, ...);
+void refresh_screen();
+char *editor_prompt(char *prompt);
 
 /* display error message */
 void display_error(const char *s)
@@ -365,6 +367,7 @@ void insert_char(int c)
     E.cursor_x++;
 }
 
+/* insert a newline */
 void insert_newline()
 {
     if (E.cursor_x == 0) {
@@ -451,7 +454,13 @@ void editor_open(char *filename)
 /* save a file to disk */
 void editor_save()
 {
-    if (E.filename == NULL) return;
+    if (E.filename == NULL) {
+        E.filename = editor_prompt("Save as: %s");
+        if (E.filename == NULL) {
+            set_status_message("Save aborted");
+            return;
+        }
+    }
 
     int len;
     char *buf = rows_to_string(&len);
@@ -628,6 +637,47 @@ void set_status_message(const char *fmt, ...)
     vsnprintf(E.status_msg, sizeof(E.status_msg), fmt, ap);
     va_end(ap);
     E.status_msg_time = time(NULL);
+}
+
+/* prompt the user to enter a filename when saving a new file */
+char *editor_prompt(char *prompt)
+{
+    size_t bufsize = 128;
+    char *buf = malloc(bufsize);
+
+    size_t buflen = 0;
+    buf[0] = '\0';
+
+    while (1) {
+        set_status_message(prompt, buf);
+        refresh_screen();
+
+        int c = read_keypress();
+        if (c ==DEL_KEY || c == CTRL_KEY('h') || c == BACKSPACE) {
+            if (buflen != 0) {
+                buf[--buflen] = '\0';
+            }
+        }
+        else if (c == '\x1b') {
+            set_status_message("");
+            free(buf);
+            return NULL;
+        }
+        else if (c == '\r') {
+            if (buflen != 0) {
+                set_status_message("");
+                return buf;
+            }
+        }
+        else if (!iscntrl(c) && c < 128) {
+            if (buflen == bufsize - 1) {
+                bufsize *= 2;
+                buf = realloc(buf, bufsize);
+            }
+            buf[buflen++] = c;
+            buf[buflen] = '\0';
+        }
+    }
 }
 
 /* move the cursor using the arrow keys */
