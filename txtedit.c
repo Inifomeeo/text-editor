@@ -69,7 +69,7 @@ struct AppendBuf {
 
 void set_status_message(const char *fmt, ...);
 void refresh_screen();
-char *editor_prompt(char *prompt);
+char *editor_prompt(char *prompt, void (*callback)(char *, int));
 
 /* display error message */
 void display_error(const char *s)
@@ -252,6 +252,23 @@ int cx_to_rx(ERow *row, int cx)
         rx++;
     }
     return rx;
+}
+
+/*
+* convert render index to chars index
+* returns: chars index
+*/
+int rx_to_cx(ERow *row, int rx)
+{
+    int cur_rx = 0;
+    int cx;
+    for (cx = 0; cx < row->size; cx++) {
+        if (row->chars[cx] == '\t') {
+            cur_rx += (TAB_STOP - 1) - (cur_rx % TAB_STOP);
+        }
+        cur_rx++;
+    }
+    return cx;
 }
 
 /* render tabs as spaces */
@@ -455,7 +472,7 @@ void editor_open(char *filename)
 void editor_save()
 {
     if (E.filename == NULL) {
-        E.filename = editor_prompt("Save as: %s");
+        E.filename = editor_prompt("Save as: %s", NULL);
         if (E.filename == NULL) {
             set_status_message("Save aborted");
             return;
@@ -481,6 +498,70 @@ void editor_save()
 
     free(buf);
     set_status_message("Can't save file! I/O error: %s", strerror(errno));
+}
+
+/* callback for find */
+void find_callback(char *query, int key)
+{
+    static int last_match = -1;
+    static int direction = 1;
+
+    if (key == '\r' || key == '\x1b') {
+        last_match = -1;
+        direction = 1;
+        return;
+    }
+    else if (key == ARROW_RIGHT || key == ARROW_DOWN) {
+        direction = 1;
+    }
+    else if (key == ARROW_LEFT || key == ARROW_UP) {
+        direction = -1;
+    }
+    else {
+        last_match = -1;
+        direction = 1;
+    }
+
+    if (last_match == -1) direction = 1;
+    int current = last_match;
+    int i;
+    for (i = 0; i < E.num_rows; i++) {
+        current += direction;
+        if (current == -1) {
+            current = E.num_rows - 1;
+        }
+
+        ERow *row = &E.rows[current];
+        char *match = strstr(row->chars, query);
+        if (match) {
+            last_match = current;
+            E.cursor_y = current;
+            E.cursor_x = rx_to_cx(row, match - row->render);
+            E.row_offset = E.num_rows;
+            break;
+        }
+    }
+}
+
+/* find a string in the file */
+void editor_find()
+{
+    int saved_cursor_x = E.cursor_x;
+    int saved_cursor_y = E.cursor_y;
+    int saved_col_offset = E.col_offset;
+    int saved_row_offset = E.row_offset;
+
+    char *query = editor_prompt("Search: %s (Use ESC/Arrows/Enter)", find_callback);
+    
+    if (query) {
+        free(query);
+    }
+    else {
+        E.cursor_x = saved_cursor_x;
+        E.cursor_y = saved_cursor_y;
+        E.col_offset = saved_col_offset;
+        E.row_offset = saved_row_offset;
+    }
 }
 
 /* fill values in append buffer */
@@ -640,7 +721,7 @@ void set_status_message(const char *fmt, ...)
 }
 
 /* prompt the user to enter a filename when saving a new file */
-char *editor_prompt(char *prompt)
+char *editor_prompt(char *prompt, void (*callback)(char *, int))
 {
     size_t bufsize = 128;
     char *buf = malloc(bufsize);
@@ -660,12 +741,14 @@ char *editor_prompt(char *prompt)
         }
         else if (c == '\x1b') {
             set_status_message("");
+            if (callback) callback(buf, c);
             free(buf);
             return NULL;
         }
         else if (c == '\r') {
             if (buflen != 0) {
                 set_status_message("");
+                if (callback) callback(buf, c);
                 return buf;
             }
         }
@@ -677,6 +760,8 @@ char *editor_prompt(char *prompt)
             buf[buflen++] = c;
             buf[buflen] = '\0';
         }
+
+        if (callback) callback(buf, c);
     }
 }
 
@@ -760,6 +845,10 @@ void process_keypress()
                 E.cursor_x = E.rows[E.cursor_y].size;
             }
             break;
+
+        case CTRL_KEY('f'):
+            editor_find();
+            break;
         
         case BACKSPACE:
         case CTRL_KEY('h'):
@@ -835,7 +924,7 @@ int main(int argc, char **argv)
         editor_open(argv[1]);
     }
 
-    set_status_message("HELP: ^S = save | ^Q = quit");
+    set_status_message("HELP: ^S = save | ^Q = quit | ^F = find");
 
     while(1) {
         refresh_screen();
