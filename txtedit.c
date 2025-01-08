@@ -1,22 +1,27 @@
 /*
- * txtedit.c
- *
- * Simple text editor in C
+ * txtedit.c - Simple text editor in C
  */
 
 #include <ctype.h>
 #include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdarg.h>
 #include <string.h>
 #include <sys/ioctl.h>
+#include <sys/types.h>
 #include <termios.h>
+#include <time.h>
 #include <unistd.h>
 
+#define TAB_STOP 8
 #define CTRL_KEY(k) ((k) & 0x1f)
 #define APPEND_BUF_INIT {NULL, 0}
 
-enum editorKey {
+#define _BSD_SOURCE
+#define _GNU_SOURCE
+
+enum EditorKeys {
     ARROW_LEFT = 1000,
     ARROW_RIGHT,
     ARROW_UP,
@@ -28,17 +33,32 @@ enum editorKey {
     PAGE_DOWN
 };
 
-struct editor_config {
+typedef struct EditorRow {
+    int size;
+    int rsize;
+    char *chars;
+    char *render;
+} ERow;
+
+struct EditorConfig {
     int cursor_x;
     int cursor_y;
+    int rx;
+    int row_offset;
+    int col_offset;
     int screen_rows;
     int screen_cols;
+    int num_rows;
+    ERow *rows;
+    char *filename;
+    char status_msg[80];
+    time_t status_msg_time;
     struct termios og_termios; /* original terminal settings */
 };
 
-struct editor_config ecfg;
+struct EditorConfig E;
 
-struct append_buf {
+struct AppendBuf {
   char *buf;
   int len;
 };
@@ -53,10 +73,10 @@ void display_error(const char *s)
     exit(1);
 }
 
-/* disable raw mode */
+/* disable raw mode in terminal */
 void disable_raw_mode()
 {
-    if (tcsetattr(STDIN_FILENO, TCSAFLUSH, &ecfg.og_termios) == -1) {
+    if (tcsetattr(STDIN_FILENO, TCSAFLUSH, &E.og_termios) == -1) {
         display_error("tcsetattr");
     };
 }
@@ -64,12 +84,12 @@ void disable_raw_mode()
 /* set terminal to raw mode */
 void enable_raw_mode()
 {
-    if (tcgetattr(STDIN_FILENO, &ecfg.og_termios) == -1) {
+    if (tcgetattr(STDIN_FILENO, &E.og_termios) == -1) {
         display_error("tcgetattr");
     };
     atexit(disable_raw_mode);
 
-    struct termios raw = ecfg.og_termios;
+    struct termios raw = E.og_termios;
 
     /* disable flags */
     raw.c_iflag &= ~(BRKINT | ICRNL | INPCK | ISTRIP | IXON);
@@ -86,7 +106,10 @@ void enable_raw_mode()
     
 }
 
-/* read keypresses from user */
+/*
+* read keypresses from user
+* returns: the ASCII code of the keypress
+*/
 int read_keypress()
 {
     int nread;
@@ -114,46 +137,31 @@ int read_keypress()
                 }
                 if (seq[2] == '~') {
                     switch (seq[1]) {
-                        case '1':
-                            return HOME_KEY;
-                        case '3':
-                            return DEL_KEY;
-                        case '4':
-                            return END_KEY;
-                        case '5':
-                            return PAGE_UP;
-                        case '6':
-                            return PAGE_DOWN;
-                        case '7':
-                            return HOME_KEY;
-                        case '8':
-                            return END_KEY;
+                        case '1': return HOME_KEY;
+                        case '3': return DEL_KEY;
+                        case '4': return END_KEY;
+                        case '5': return PAGE_UP;
+                        case '6': return PAGE_DOWN;
+                        case '7': return HOME_KEY;
+                        case '8': return END_KEY;
                     }
                 }
             }
             else {
                 switch (seq[1]) {
-                    case 'A':
-                        return ARROW_UP;
-                    case 'B':
-                        return ARROW_DOWN;
-                    case 'C':
-                        return ARROW_RIGHT;
-                    case 'D':
-                        return ARROW_LEFT;
-                    case 'H':
-                        return HOME_KEY;
-                    case 'F':
-                        return END_KEY;
+                    case 'A': return ARROW_UP;
+                    case 'B': return ARROW_DOWN;
+                    case 'C': return ARROW_RIGHT;
+                    case 'D': return ARROW_LEFT;
+                    case 'H': return HOME_KEY;
+                    case 'F': return END_KEY;
                 }
             }
         }
         else if (seq[0] == 'O') {
             switch (seq[1]) {
-                case 'H':
-                    return HOME_KEY;
-                case 'F':
-                    return END_KEY;
+                case 'H': return HOME_KEY;
+                case 'F': return END_KEY;
             }
         }
 
@@ -164,8 +172,10 @@ int read_keypress()
     }
 }
 
-/* get cursor position */
-/* returns 0 on success, -1 on error */
+/*
+* get cursor position
+* returns: 0 on success, -1 on error
+*/
 int get_cursor_pos(int *rows, int *cols)
 {
     char buf[32];
@@ -197,8 +207,10 @@ int get_cursor_pos(int *rows, int *cols)
     return 0;
 }
 
-/* get terminal size */
-/* returns 0 on success, -1 on error */
+/*
+* get terminal size
+* returns: 0 on success, -1 on error
+*/
 int get_window_size(int *rows, int *cols)
 {
     struct winsize ws;
@@ -217,8 +229,97 @@ int get_window_size(int *rows, int *cols)
     }
 }
 
+/*
+* convert chars index to render index
+* returns: render index
+*/
+int cx_to_rx(ERow *row, int cx) {
+    int rx = 0;
+    int j;
+    for (j = 0; j < cx; j++) {
+        if (row->chars[j] == '\t') {
+            rx += (TAB_STOP - 1) - (rx % TAB_STOP);
+        }
+        rx++;
+    }
+    return rx;
+}
+
+/* render tabs as spaces */
+void editor_update_row(ERow *row) {
+    int tabs = 0;
+    int j;
+    for (j = 0; j < row->size; j++) {
+        if (row->chars[j] == '\t') {
+            tabs++;
+        }
+    }
+
+    free(row->render);
+    row->render = malloc(row->size + tabs * (TAB_STOP - 1) + 1);
+    
+    int idx = 0;
+    for (j = 0; j < row->size; j++) {
+        if (row->chars[j] == '\t') {
+            row->render[idx++] = ' ';
+            while (idx % TAB_STOP != 0) {
+                row->render[idx++] = ' ';
+            }
+        }
+        else {
+            row->render[idx++] = row->chars[j];
+        }
+    }
+    row->render[idx] = '\0';
+    row->rsize = idx;
+}
+
+/* append lines of text to the editor */
+void editor_append_row(char *s, size_t len)
+{
+    E.rows = realloc(E.rows, sizeof(ERow) * (E.num_rows + 1));
+
+    int at = E.num_rows;
+    E.rows[at].size = len;
+    E.rows[at].chars = malloc(len + 1);
+    memcpy(E.rows[at].chars, s, len);
+    E.rows[at].chars[len] = '\0';
+
+    E.rows[at].rsize = 0;
+    E.rows[at].render = NULL;
+    editor_update_row(&E.rows[at]);
+
+    E.num_rows++;
+}
+
+/* open and read a file from disk */
+void editor_open(char *filename)
+{
+    free(E.filename);
+    E.filename = strdup(filename);
+
+    FILE *fp = fopen(filename, "r");
+    if (!fp) {
+        display_error("fopen");
+    }
+
+    char *line = NULL;
+    size_t linecap = 0;
+    ssize_t linelen;
+    while ((linelen = getline(&line, &linecap, fp)) != -1) {
+        while (linelen > 0 && (line[linelen - 1] == '\n' || line[linelen - 1] == '\r')) {
+            linelen--;
+        }
+        editor_append_row(line, linelen);
+    }
+
+    free(line);
+    fclose(fp);
+}
+
 /* fill values in append buffer */
-void ab_append(struct append_buf *ab,  const char *s, int len) {
+void ab_append(struct AppendBuf *ab,  const char *s, int len)
+{
     char *new = realloc(ab->buf, ab->len + len);
     if (new == NULL) {
         return;
@@ -230,55 +331,129 @@ void ab_append(struct append_buf *ab,  const char *s, int len) {
 }
 
 /* free append buffer */
-void ab_free(struct append_buf *ab) {
+void ab_free(struct AppendBuf *ab)
+{
     free(ab->buf);
 }
 
-/* draw a column of tildes on the left side of the screen */
-void draw_rows(struct append_buf *ab)
+/* prevent the cursor from going off the screen */
+void editor_scroll()
 {
-    for (int i = 0; i < ecfg.screen_rows; i++) {
-        /* display welcome message in the middle of the screen */
-        if (i == ecfg.screen_rows / 3) {
-            char welcome[80];
-            int welcome_len = snprintf(welcome, sizeof(welcome),
-                    "Welcome to txtedit! Press Ctrl+q to quit.");
-            if (welcome_len > ecfg.screen_cols) {
-                welcome_len = ecfg.screen_cols;
+    E.rx = 0;
+    if (E.cursor_y < E.num_rows) {
+        E.rx = cx_to_rx(&E.rows[E.cursor_y], E.cursor_x);
+    }
+
+    if (E.cursor_y < E.row_offset) {
+        E.row_offset = E.cursor_y;
+    }
+    if (E.cursor_y >= E.row_offset + E.screen_rows) {
+        E.row_offset = E.cursor_y - E.screen_rows + 1;
+    }
+    if (E.rx < E.col_offset) {
+        E.col_offset = E.rx;
+    }
+    if (E.rx >= E.col_offset + E.screen_cols) {
+        E.col_offset = E.rx - E.screen_cols + 1;
+    }
+}
+
+/* draw a column of tildes on the left side of the screen */
+void draw_rows(struct AppendBuf *ab)
+{
+    int i;
+    for (i = 0; i < E.screen_rows; i++) {
+        int file_row = i + E.row_offset;
+        if (file_row >= E.num_rows) {
+            /* display welcome message in the middle of the screen */
+            if (E.num_rows == 0 && i == E.screen_rows / 3) {
+                char welcome[80];
+                int welcome_len = snprintf(welcome, sizeof(welcome),
+                        "Welcome to txtedit! Press ^Q to quit.");
+                if (welcome_len > E.screen_cols) {
+                    welcome_len = E.screen_cols;
+                }
+                int padding = (E.screen_cols - welcome_len) / 2;
+                if (padding) {
+                    ab_append(ab, "~", 1); /* tilde */
+                    padding--;
+                }
+                while (padding--) {
+                    ab_append(ab, " ", 1);
+                }
+                ab_append(ab, welcome, welcome_len);
             }
-            int padding = (ecfg.screen_cols - welcome_len) / 2;
-            if (padding) {
+            else {
                 ab_append(ab, "~", 1); /* tilde */
-                padding--;
             }
-            while (padding--) {
-                ab_append(ab, " ", 1);
-            }
-            ab_append(ab, welcome, welcome_len);
         }
         else {
-            ab_append(ab, "~", 1); /* tilde */
+            int len = E.rows[file_row].rsize - E.col_offset;
+            if (len < 0) len = 0;
+            if (len > E.screen_cols) len = E.screen_cols;
+            ab_append(ab, &E.rows[file_row].render[E.col_offset], len);
         }
 
         ab_append(ab, "\x1b[K", 3);
-        if (i < ecfg.screen_rows - 1) {
-            ab_append(ab, "\r\n", 2);
+        ab_append(ab, "\r\n", 2);
+    }
+}
+
+/* draw a status bar at the bottom of the screen */
+void draw_status_bar(struct AppendBuf *ab)
+{
+    ab_append(ab, "\x1b[7m", 4);
+    char status[80], rstatus[80];
+    int len = snprintf(status, sizeof(status), "%.20s - %d lines",
+        E.filename ? E.filename : "[No Name]", E.num_rows);
+    int rlen = snprintf(rstatus, sizeof(rstatus), "%d/%d", E.cursor_y + 1, E.num_rows);
+    if (len > E.screen_cols) {
+        len = E.screen_cols;
+    }
+    ab_append(ab, status, len);
+    while (len < E.screen_cols) {
+        if (E.screen_cols - len == rlen) {
+            ab_append(ab, rstatus, rlen);
+            break;
         }
+        else {
+            ab_append(ab, " ", 1);
+            len++;
+        }
+    }
+    ab_append(ab, "\x1b[m", 3);
+    ab_append(ab, "\r\n", 2);
+}
+
+/* draw a message bar at the bottom of the screen */
+void draw_message_bar(struct AppendBuf *ab)
+{
+    ab_append(ab, "\x1b[K", 3);
+    int len = strlen(E.status_msg);
+    if (len > E.screen_cols) {
+        len = E.screen_cols;
+    }
+    if (len && time(NULL) - E.status_msg_time < 5) {
+        ab_append(ab, E.status_msg, len);
     }
 }
 
 /* refresh the screen */
 void refresh_screen()
 {
-    struct append_buf ab = APPEND_BUF_INIT;
+    editor_scroll();
+
+    struct AppendBuf ab = APPEND_BUF_INIT;
 
     ab_append(&ab, "\x1b[?25l", 6);
     ab_append(&ab, "\x1b[H", 3);
 
     draw_rows(&ab);
+    draw_status_bar(&ab);
+    draw_message_bar(&ab);
 
     char buf[32];
-    snprintf(buf, sizeof(buf), "\x1b[%d;%dH", ecfg.cursor_y + 1, ecfg.cursor_x + 1);
+    snprintf(buf, sizeof(buf), "\x1b[%d;%dH", (E.cursor_y - E.row_offset) + 1, (E.rx - E.col_offset) + 1);
     ab_append(&ab, buf, strlen(buf));
 
     ab_append(&ab, "\x1b[?25h", 6);
@@ -287,29 +462,56 @@ void refresh_screen()
     ab_free(&ab);
 }
 
+/* set a status message */
+void set_status_message(const char *fmt, ...)
+{
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(E.status_msg, sizeof(E.status_msg), fmt, ap);
+    va_end(ap);
+    E.status_msg_time = time(NULL);
+}
+
 /* move the cursor using the arrow keys */
-void move_cursor(int key) {
+void move_cursor(int key)
+{
+    ERow *row = (E.cursor_y >= E.num_rows) ? NULL : &E.rows[E.cursor_y];
+
     switch (key) {
         case ARROW_UP:
-            if (ecfg.cursor_y != 0) {
-                ecfg.cursor_y--;
+            if (E.cursor_y != 0) {
+                E.cursor_y--;
             }
             break;
         case ARROW_DOWN:
-            if (ecfg.cursor_y != ecfg.screen_rows - 1) {
-                ecfg.cursor_y++;
+            if (E.cursor_y < E.num_rows) {
+                E.cursor_y++;
             }
             break;
         case ARROW_LEFT:
-            if (ecfg.cursor_x != 0) {
-                ecfg.cursor_x--;
+            if (E.cursor_x != 0) {
+                E.cursor_x--;
+            }
+            else if (E.cursor_y > 0) {
+                E.cursor_y--;
+                E.cursor_x = E.rows[E.cursor_y].size;
             }
             break;
         case ARROW_RIGHT:
-            if (ecfg.cursor_x != ecfg.screen_cols - 1) {
-                ecfg.cursor_x++;
+            if (row && E.cursor_x < row->size) {
+                E.cursor_x++;
+            }
+            else if (row && E.cursor_x == row->size) {
+                E.cursor_y++;
+                E.cursor_x = 0;
             }
             break;
+    }
+
+    row = (E.cursor_y >= E.num_rows) ? NULL : &E.rows[E.cursor_y];
+    int row_len = row ? row->size : 0;
+    if (E.cursor_x > row_len) {
+        E.cursor_x = row_len;
     }
 }
 
@@ -327,16 +529,27 @@ void process_keypress()
             break;
         
         case HOME_KEY:
-            ecfg.cursor_x = 0;
+            E.cursor_x = 0;
             break;
         case END_KEY:
-            ecfg.cursor_x = ecfg.screen_cols - 1;
+            if (E.cursor_y < E.num_rows) {
+                E.cursor_x = E.rows[E.cursor_y].size;
+            }
             break;
 
         case PAGE_UP:
         case PAGE_DOWN:
             {
-                int times = ecfg.screen_rows;
+                if (c == PAGE_UP) {
+                    E.cursor_y = E.row_offset;
+                }
+                else if (c == PAGE_DOWN) {
+                    E.cursor_y = E.row_offset + E.screen_rows - 1;
+                    if (E.cursor_y > E.num_rows) {
+                        E.cursor_y = E.num_rows;                        
+                    }
+                }
+                int times = E.screen_rows;
                 while (times--) {
                     move_cursor(c == PAGE_UP ? ARROW_UP : ARROW_DOWN);
                 }
@@ -353,19 +566,34 @@ void process_keypress()
 }
 
 /* initialize editor */
-void init_editor()
+void editor_init()
 {
-    ecfg.cursor_x = 0;
-    ecfg.cursor_y = 0;
-    if (get_window_size(&ecfg.screen_rows, &ecfg.screen_cols) == -1) {
+    E.cursor_x = 0;
+    E.cursor_y = 0;
+    E.rx = 0;
+    E.row_offset = 0;
+    E.col_offset = 0;
+    E.num_rows = 0;
+    E.rows = NULL;
+    E.filename = NULL;
+    E.status_msg[0] = '\0';
+    E.status_msg_time = 0;
+
+    if (get_window_size(&E.screen_rows, &E.screen_cols) == -1) {
         display_error("get_window_size");
     }
+    E.screen_rows -= 2;
 }
 
-int main()
+int main(int argc, char **argv)
 {
     enable_raw_mode();
-    init_editor();
+    editor_init();
+    if (argc >= 2) {
+        editor_open(argv[1]);
+    }
+
+    set_status_message("HELP: ^Q = quit");
 
     while(1) {
         refresh_screen();
