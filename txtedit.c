@@ -68,7 +68,7 @@ struct AppendBuf {
 };
 
 void set_status_message(const char *fmt, ...);
-void refresh_screen();
+void refresh_screen(void);
 char *editor_prompt(char *prompt, void (*callback)(char *, int));
 
 /* display error message */
