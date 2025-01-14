@@ -402,6 +402,7 @@ void insert_newline(void)
     E.cursor_x = 0;
 }
 
+/* delete the character to the left of the cursor */
 void delete_char(void)
 {
     if (E.cursor_y == E.num_rows) return;
@@ -616,7 +617,7 @@ void draw_rows(struct AppendBuf *ab)
             if (E.num_rows == 0 && i == E.screen_rows / 3) {
                 char welcome[80];
                 int welcome_len = snprintf(welcome, sizeof(welcome),
-                        "Welcome to txtedit! Press ^Q to quit.");
+                        "Welcome to the text editor! Press ^Q to quit.");
                 if (welcome_len > E.screen_cols) {
                     welcome_len = E.screen_cols;
                 }
