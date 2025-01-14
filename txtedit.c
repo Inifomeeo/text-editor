@@ -82,7 +82,7 @@ void display_error(const char *s)
 }
 
 /* disable raw mode in terminal */
-void disable_raw_mode()
+void disable_raw_mode(void)
 {
     if (tcsetattr(STDIN_FILENO, TCSAFLUSH, &E.og_termios) == -1) {
         display_error("tcsetattr");
@@ -90,7 +90,7 @@ void disable_raw_mode()
 }
 
 /* set terminal to raw mode */
-void enable_raw_mode()
+void enable_raw_mode(void)
 {
     if (tcgetattr(STDIN_FILENO, &E.og_termios) == -1) {
         display_error("tcgetattr");
@@ -118,7 +118,7 @@ void enable_raw_mode()
 * read keypresses from user
 * returns: the ASCII code of the keypress
 */
-int read_keypress()
+int read_keypress(void)
 {
     int nread;
     char c;
@@ -385,7 +385,7 @@ void insert_char(int c)
 }
 
 /* insert a newline */
-void insert_newline()
+void insert_newline(void)
 {
     if (E.cursor_x == 0) {
         editor_insert_row(E.cursor_y, "", 0);
@@ -402,7 +402,7 @@ void insert_newline()
     E.cursor_x = 0;
 }
 
-void delete_char()
+void delete_char(void)
 {
     if (E.cursor_y == E.num_rows) return;
     if (E.cursor_x == 0 && E.cursor_y == 0) return;
@@ -469,7 +469,7 @@ void editor_open(char *filename)
 }
 
 /* save a file to disk */
-void editor_save()
+void editor_save(void)
 {
     if (E.filename == NULL) {
         E.filename = editor_prompt("Save as: %s", NULL);
@@ -544,7 +544,7 @@ void find_callback(char *query, int key)
 }
 
 /* find a string in the file */
-void editor_find()
+void editor_find(void)
 {
     int saved_cursor_x = E.cursor_x;
     int saved_cursor_y = E.cursor_y;
@@ -584,7 +584,7 @@ void ab_free(struct AppendBuf *ab)
 }
 
 /* prevent the cursor from going off the screen */
-void editor_scroll()
+void editor_scroll(void)
 {
     E.rx = 0;
     if (E.cursor_y < E.num_rows) {
@@ -687,7 +687,7 @@ void draw_message_bar(struct AppendBuf *ab)
 }
 
 /* refresh the screen */
-void refresh_screen()
+void refresh_screen(void)
 {
     editor_scroll();
 
@@ -809,7 +809,7 @@ void move_cursor(int key)
 }
 
 /* process user keypresses */
-void process_keypress()
+void process_keypress(void)
 {
     static int quit_times = QUIT_TIMES;
 
@@ -896,7 +896,7 @@ void process_keypress()
 }
 
 /* initialize editor */
-void editor_init()
+void editor_init(void)
 {
     E.cursor_x = 0;
     E.cursor_y = 0;
